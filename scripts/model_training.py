@@ -1,72 +1,62 @@
 import pandas as pd
 import numpy as np
-import xgboost as xgb
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, classification_report
-from imblearn.over_sampling import RandomOverSampler
-import joblib
 import shap
 import matplotlib.pyplot as plt
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.model_selection import train_test_split
+import joblib
+
+X_train = pd.read_csv("./data/processed/X_train.csv")
+X_test = pd.read_csv("./data/processed/X_test.csv")
+y_train = pd.read_csv("./data/processed/y_train.csv").values.ravel()
+y_test = pd.read_csv("./data/processed/y_test.csv").values.ravel()
 
 
-train_data = pd.read_csv("data/train_data.csv")
-test_data = pd.read_csv("data/test_data.csv")
+X_test = X_test[X_train.columns]
 
 
-X_train, y_train = train_data.drop(columns=['treatment']), train_data['treatment']
-X_test, y_test = test_data.drop(columns=['treatment']), test_data['treatment']
+models = {
+    "Random Forest": RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42),
+    "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', max_depth=6, random_state=42),
+    "Neural Network": MLPClassifier(hidden_layer_sizes=(100,), max_iter=500, alpha=0.01, random_state=42)
+}
 
 
-oversampler = RandomOverSampler(random_state=42)
-X_train_resampled, y_train_resampled = oversampler.fit_resample(X_train, y_train)
+best_model = None
+best_score = 0
+results = {}
 
-
-rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
-rf_model.fit(X_train_resampled, y_train_resampled)
-
-
-xgb_model = xgb.XGBClassifier(eval_metric='mlogloss', random_state=42)
-xgb_model.fit(X_train_resampled, y_train_resampled)
-
-
-
-THRESHOLD = 0.0004 
-
-def custom_predict(model, X_test):
-    probabilities = model.predict_proba(X_test)  # Get class probabilities
-    class_1_prob = probabilities[:, 1]  # Probability of "Needs Treatment"
+for name, model in models.items():
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
     
-    # Predict Class 1 if probability > threshold, else Class 0
-    predictions = (class_1_prob >= THRESHOLD).astype(int)
-    return predictions
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred, average='weighted')
+    recall = recall_score(y_test, y_pred, average='weighted')
+    f1 = f1_score(y_test, y_pred, average='weighted')
+    roc_auc = roc_auc_score(y_test, model.predict_proba(X_test), multi_class='ovr')
+    
+    results[name] = {"Accuracy": accuracy, "Precision": precision, "Recall": recall, "F1-score": f1, "ROC-AUC": roc_auc}
+    
+    print(f"{name} Performance:")
+    print(f"Accuracy: {accuracy:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1-score: {f1:.4f}, ROC-AUC: {roc_auc:.4f}\n")
+    
+    if accuracy > best_score:
+        best_model = model
+        best_score = accuracy
 
 
-def evaluate_model(model, X_test, y_test, model_name):
-    y_pred = custom_predict(model, X_test)  # Use custom threshold
-    y_prob = model.predict_proba(X_test)  # Get probability scores
-
-    print(f"\n{model_name} Performance:")
-    print(classification_report(y_test, y_pred, zero_division=1))
-    print("Accuracy:", accuracy_score(y_test, y_pred))
-    print("Precision:", precision_score(y_test, y_pred, average='weighted', zero_division=1))
-    print("Recall:", recall_score(y_test, y_pred, average='weighted', zero_division=1))
-    print("F1 Score:", f1_score(y_test, y_pred, average='weighted'))
+joblib.dump(best_model, "best_model.pkl")
+print(f"Best Model Saved: {best_model}")
 
 
-X_test = pd.DataFrame(X_test, columns=train_data.drop(columns=['treatment']).columns)
+if isinstance(best_model, (RandomForestClassifier, XGBClassifier)):
+    explainer = shap.TreeExplainer(best_model)
+else:
+    explainer = shap.KernelExplainer(best_model.predict, shap.sample(X_train, 100))
 
-
-
-
-evaluate_model(rf_model, X_test, y_test, "Random Forest")
-evaluate_model(xgb_model, X_test, y_test, "XGBoost")
-
-
-explainer = shap.Explainer(xgb_model)
 shap_values = explainer.shap_values(X_test)
 shap.summary_plot(shap_values, X_test)
-
-
-joblib.dump(xgb_model, "models/mental_health_model.pkl")
-print("Model saved successfully!")
